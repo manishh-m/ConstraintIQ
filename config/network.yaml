@@ -1,0 +1,73 @@
+# ConstraintIQ — network scenario definition
+# Single source of truth for the synthetic last-mile network.
+# Edit this file to run "what-if" scenarios (e.g. spike demand at a zone,
+# tighten a hub's capacity) without touching any code.
+
+# --- Simulation window ---
+simulation:
+  start_date: "2026-01-01"
+  days: 180            # length of the synthetic history to generate
+  forecast_horizon: 14 # days ahead to forecast / project constraint migration
+  random_seed: 42      # reproducible synthetic data
+
+# --- Hubs (2) ---
+# capacity_per_day = max parcels the hub can process/dispatch per day (throughput ceiling)
+hubs:
+  - id: HUB_NORTH
+    name: "North Hub"
+    capacity_per_day: 12000
+  - id: HUB_SOUTH
+    name: "South Hub"
+    capacity_per_day: 9000
+
+# --- Zones (6-8) ---
+# Each zone is served by a hub. base_demand is mean parcels/day before
+# trend/seasonality/noise. trend_per_day is the daily linear drift (models
+# demand shifting across the network over time — the driver of constraint migration).
+zones:
+  - id: Z1
+    name: "Zone 1"
+    hub: HUB_NORTH
+    base_demand: 2200
+    trend_per_day: 12.0
+    weekly_seasonality: 0.18
+  - id: Z2
+    name: "Zone 2"
+    hub: HUB_NORTH
+    base_demand: 3000
+    trend_per_day: 4.0
+    weekly_seasonality: 0.22
+  - id: Z3
+    name: "Zone 3"
+    hub: HUB_NORTH
+    base_demand: 2600
+    trend_per_day: 20.0        # fast-growing zone — likely future constraint driver
+    weekly_seasonality: 0.15
+  - id: Z4
+    name: "Zone 4"
+    hub: HUB_NORTH
+    base_demand: 1800
+    trend_per_day: 2.0
+    weekly_seasonality: 0.20
+  - id: Z5
+    name: "Zone 5"
+    hub: HUB_SOUTH
+    base_demand: 2800
+    trend_per_day: 8.0
+    weekly_seasonality: 0.19
+  - id: Z6
+    name: "Zone 6"
+    hub: HUB_SOUTH
+    base_demand: 2400
+    trend_per_day: 15.0
+    weekly_seasonality: 0.17
+  - id: Z7
+    name: "Zone 7"
+    hub: HUB_SOUTH
+    base_demand: 2000
+    trend_per_day: -3.0        # declining zone — demand shifting away
+    weekly_seasonality: 0.21
+
+# --- Noise ---
+noise:
+  demand_cv: 0.08   # coefficient of variation for day-to-day random noise

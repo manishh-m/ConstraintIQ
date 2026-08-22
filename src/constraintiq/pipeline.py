@@ -1,0 +1,104 @@
+"""End-to-end pipeline: datagen -> forecast -> ToC constraint migration.
+
+    uv run python -m constraintiq.pipeline
+
+Single orchestration point — ties the three layers together and returns all results the
+dashboard needs in one dict.
+"""
+
+from __future__ import annotations
+
+from constraintiq.config import load_config
+from constraintiq.datagen.demand import generate_demand
+from constraintiq.datagen.network import build_network
+from constraintiq.forecasting.models import forecast_all_zones
+from constraintiq.toc.constraint import (
+    binding_constraint_history,
+    compute_utilization,
+    identify_binding_constraint,
+)
+from constraintiq.toc.migration import (
+    detect_historical_migration,
+    detect_migration,
+    migration_summary,
+    project_future_utilization,
+)
+
+
+def run(config_path=None) -> dict:
+    """Run the full pipeline and return a results dict.
+
+    Keys:
+        config                   NetworkConfig
+        network                  topology dict
+        demand                   historical demand DataFrame [date, zone_id, hub_id, demand]
+        forecasts                per-zone forecast DataFrame [date, zone_id, hub_id, forecast_demand]
+        utilization              historical hub utilization DataFrame
+        constraint_history       binding constraint per day over history [date, resource_id, utilization]
+        historical_migrations    list[MigrationEvent] detected in the history window
+        current_constraint       ResourceUtilization for the most recent day
+        projected_utilization    forecast-period hub utilization DataFrame
+        migration_events         list[MigrationEvent] detected in forecast horizon
+        summary                  human-readable full summary string
+    """
+    config = load_config(*([config_path] if config_path else []))
+    network = build_network(config)
+    demand = generate_demand(config)
+    forecasts = forecast_all_zones(demand, horizon=config.forecast_horizon)
+
+    utilization = compute_utilization(demand, network)
+    constraint_hist = binding_constraint_history(utilization)
+    historical_migrations = detect_historical_migration(utilization)
+
+    last_day = utilization["date"].max()
+    current_constraint = identify_binding_constraint(utilization[utilization["date"] == last_day])
+
+    projected = project_future_utilization(forecasts, network)
+    migration_events = detect_migration(projected)
+
+    summary_lines = [
+        migration_summary(historical_migrations, label="history window"),
+        migration_summary(migration_events, label="forecast horizon"),
+    ]
+
+    return {
+        "config": config,
+        "network": network,
+        "demand": demand,
+        "forecasts": forecasts,
+        "utilization": utilization,
+        "constraint_history": constraint_hist,
+        "historical_migrations": historical_migrations,
+        "current_constraint": current_constraint,
+        "projected_utilization": projected,
+        "migration_events": migration_events,
+        "summary": "\n\n".join(summary_lines),
+    }
+
+
+if __name__ == "__main__":
+    results = run()
+    config = results["config"]
+
+    print("\n=== ConstraintIQ — Pipeline Output ===\n")
+
+    print("--- Historical utilisation (last 7 days) ---")
+    tail = results["utilization"].tail(len(results["network"]["hubs"]) * 7)
+    print(tail.to_string(index=False))
+
+    print(f"\n--- Current binding constraint (day {config.days}) ---")
+    cc = results["current_constraint"]
+    print(f"  {cc.resource_id}  load={cc.load:,.0f}  capacity={cc.capacity:,.0f}  "
+          f"utilisation={cc.utilization:.1%}")
+
+    print(f"\n--- {results['summary']} ---")
+
+    if results["historical_migrations"]:
+        print("\nHistorical migration events:")
+        for e in results["historical_migrations"]:
+            print(f"  {e}")
+
+    if results["migration_events"]:
+        print("\nForecast migration events:")
+        for e in results["migration_events"]:
+            print(f"  {e}")

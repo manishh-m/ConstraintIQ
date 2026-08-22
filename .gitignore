@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environment
+.venv/
+.env
+
+# uv
+# (uv.lock IS committed — it pins reproducible deps)
+
+# Generated synthetic data (regenerable via datagen)
+data/synthetic/*
+!data/synthetic/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

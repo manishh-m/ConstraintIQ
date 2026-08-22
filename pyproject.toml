@@ -1,0 +1,36 @@
+[project]
+name = "constraintiq"
+version = "0.1.0"
+description = "Predictive constraint-migration detection for last-mile logistics networks (Theory of Constraints + demand forecasting). Proof-of-concept on synthetic data."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.5",
+    "pyyaml>=6.0",
+    "plotly>=5.22",
+    "streamlit>=1.37",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "jupyter>=1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/constraintiq"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
