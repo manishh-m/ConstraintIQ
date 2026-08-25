@@ -77,4 +77,5 @@ zones:
 
 # --- Noise ---
 noise:
-  demand_cv: 0.08   # coefficient of variation for day-to-day random noise
+  demand_cv: 0.08              # coefficient of variation for day-to-day random noise
+  surge_availability_noise_cv: 0.10  # noise on gig-partner surge availability (day-of-week + fatigue + gaussian)

@@ -43,6 +43,7 @@ class NetworkConfig:
     hubs: list[Hub]
     zones: list[Zone]
     demand_cv: float
+    surge_availability_noise_cv: float
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NetworkConfig:
@@ -66,4 +67,5 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> NetworkConfig:
         hubs=hubs,
         zones=zones,
         demand_cv=raw["noise"]["demand_cv"],
+        surge_availability_noise_cv=raw["noise"]["surge_availability_noise_cv"],
     )

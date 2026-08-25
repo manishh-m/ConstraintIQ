@@ -6,7 +6,7 @@ import pytest
 from constraintiq.config import load_config
 from constraintiq.datagen.demand import generate_demand
 from constraintiq.datagen.network import build_network
-from constraintiq.toc.capacity import CapacityState, compute_capacity_state
+from constraintiq.toc.capacity import CapacityState, compute_capacity_state, surge_incentive_cost
 from constraintiq.toc.constraint import (
     ResourceUtilization,
     binding_constraint_history,
@@ -57,7 +57,7 @@ def test_utilization_has_expected_columns(utilization):
     assert set(utilization.columns) >= {
         "date", "resource_id", "resource_type", "load",
         "base_capacity", "max_surge_capacity", "surge_lead_time_days",
-        "effective_capacity", "utilization", "is_soft", "is_hard",
+        "surge_available", "effective_capacity", "utilization", "is_soft", "is_hard",
     }
 
 
@@ -286,3 +286,58 @@ def test_capacity_state_zero_surge_pool():
     state_ok = compute_capacity_state("HUB_X", 9999.0, _hub_cfg(10000, 0, 0))
     assert not state_ok.is_hard_constraint
     assert not state_ok.is_soft_constraint
+
+
+# ── surge_incentive_cost ──────────────────────────────────────────────────────
+
+def test_surge_cost_no_surge_is_one():
+    """Zero surge units → multiplier = 1.0 (no premium)."""
+    assert surge_incentive_cost(0.0, 2000.0, 3, 3) == pytest.approx(1.0)
+
+
+def test_surge_cost_no_surge_pool_is_one():
+    """Hub with no surge pool → multiplier = 1.0."""
+    assert surge_incentive_cost(500.0, 0.0, 0, 3) == pytest.approx(1.0)
+
+
+def test_surge_cost_volume_premium_convex():
+    """Volume premium alone (lead time met): 1 + 0.5 * fraction²."""
+    # 50% of max_surge → fraction=0.5 → premium = 1 + 0.5*0.25 = 1.125
+    cost_half = surge_incentive_cost(1000.0, 2000.0, 5, 3)   # lead time met
+    assert cost_half == pytest.approx(1.125)
+
+    # 100% of max_surge → fraction=1.0 → premium = 1 + 0.5*1 = 1.5
+    cost_full = surge_incentive_cost(2000.0, 2000.0, 5, 3)
+    assert cost_full == pytest.approx(1.5)
+
+    # Full surge costs more than half surge
+    assert cost_full > cost_half
+
+
+def test_surge_cost_short_notice_penalty():
+    """Each day short of required lead time adds 50% to the total multiplier."""
+    # 2 days short → short_notice_hit = 1 + 0.5*2 = 2.0; volume at 50% → 1.125
+    cost = surge_incentive_cost(1000.0, 2000.0, 1, 3)  # given=1, required=3 → 2 days short
+    assert cost == pytest.approx(1.125 * 2.0)
+
+
+def test_surge_cost_lead_time_met_no_penalty():
+    """No penalty when given lead time equals or exceeds required."""
+    cost_exact  = surge_incentive_cost(1000.0, 2000.0, 3, 3)
+    cost_excess = surge_incentive_cost(1000.0, 2000.0, 5, 3)
+    assert cost_exact  == pytest.approx(1.125)
+    assert cost_excess == pytest.approx(1.125)
+
+
+def test_surge_cost_multiplier_property_normal_state():
+    """No surge deployed → surge_cost_multiplier = 1.0."""
+    state = compute_capacity_state("HUB_X", 8000.0, _hub_cfg(10000, 2000, 3))
+    assert state.surge_cost_multiplier == pytest.approx(1.0)
+
+
+def test_surge_cost_multiplier_property_soft():
+    """Soft constraint with zero notice (worst-case): fraction=0.5, shortfall=3."""
+    # load=11000, base=10000, max_surge=2000 → surge_used=1000, fraction=0.5
+    # volume_premium = 1.125, short_notice_hit = 1 + 0.5*3 = 2.5
+    state = compute_capacity_state("HUB_X", 11000.0, _hub_cfg(10000, 2000, 3))
+    assert state.surge_cost_multiplier == pytest.approx(1.125 * 2.5)

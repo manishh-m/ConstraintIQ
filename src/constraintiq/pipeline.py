@@ -9,9 +9,11 @@ dashboard needs in one dict.
 from __future__ import annotations
 
 from constraintiq.config import load_config
+from constraintiq.datagen.capacity import generate_surge_availability
 from constraintiq.datagen.demand import generate_demand
 from constraintiq.datagen.network import build_network
 from constraintiq.forecasting.models import forecast_all_zones
+from constraintiq.toc.capacity import CapacityState
 from constraintiq.toc.constraint import (
     binding_constraint_history,
     compute_utilization,
@@ -44,17 +46,31 @@ def run(config_path=None) -> dict:
     config = load_config(*([config_path] if config_path else []))
     network = build_network(config)
     demand = generate_demand(config)
+    surge_availability = generate_surge_availability(config)
     forecasts = forecast_all_zones(demand, horizon=config.forecast_horizon)
 
-    utilization = compute_utilization(demand, network)
+    utilization = compute_utilization(demand, network, surge_availability=surge_availability)
     constraint_hist = binding_constraint_history(utilization)
     historical_migrations = detect_historical_migration(utilization)
 
     last_day = utilization["date"].max()
-    current_constraint = identify_binding_constraint(utilization[utilization["date"] == last_day])
+    last_day_util = utilization[utilization["date"] == last_day]
+    current_constraint = identify_binding_constraint(last_day_util)
 
     projected = project_future_utilization(forecasts, network)
     migration_events = detect_migration(projected)
+
+    # Per-hub surge cost multiplier on the last day of history (worst-case notice = 0).
+    hub_cost_multipliers: dict[str, float] = {}
+    for _, row in last_day_util.iterrows():
+        state = CapacityState(
+            resource_id=row["resource_id"],
+            base_capacity=float(row["base_capacity"]),
+            max_surge_capacity=float(row["surge_available"]),
+            surge_lead_time_days=int(row["surge_lead_time_days"]),
+            load=float(row["load"]),
+        )
+        hub_cost_multipliers[row["resource_id"]] = round(state.surge_cost_multiplier, 4)
 
     summary_lines = [
         migration_summary(historical_migrations, label="history window"),
@@ -65,6 +81,7 @@ def run(config_path=None) -> dict:
         "config": config,
         "network": network,
         "demand": demand,
+        "surge_availability": surge_availability,
         "forecasts": forecasts,
         "utilization": utilization,
         "constraint_history": constraint_hist,
@@ -72,6 +89,7 @@ def run(config_path=None) -> dict:
         "current_constraint": current_constraint,
         "projected_utilization": projected,
         "migration_events": migration_events,
+        "hub_cost_multipliers": hub_cost_multipliers,
         "summary": "\n\n".join(summary_lines),
     }
 
@@ -94,8 +112,14 @@ if __name__ == "__main__":
         status = "SOFT — surge deployed, buffer shrinking"
     else:
         status = "normal — within base capacity"
+    cost_mult = results["hub_cost_multipliers"].get(cc.resource_id, 1.0)
     print(f"  {cc.resource_id}  load={cc.load:,.0f}  base={cc.base_capacity:,.0f}  "
-          f"effective={cc.effective_capacity:,.0f}  utilisation={cc.utilization:.1%}  [{status}]")
+          f"effective={cc.effective_capacity:,.0f}  utilisation={cc.utilization:.1%}  "
+          f"surge_cost_multiplier={cost_mult:.2f}×  [{status}]")
+
+    print("\n--- Surge cost multipliers (all hubs, worst-case notice) ---")
+    for hub_id, mult in results["hub_cost_multipliers"].items():
+        print(f"  {hub_id}: {mult:.2f}×")
 
     print(f"\n--- {results['summary']} ---")
 

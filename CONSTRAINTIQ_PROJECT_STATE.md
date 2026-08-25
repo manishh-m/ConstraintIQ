@@ -2,7 +2,7 @@
 
 > **Purpose:** Single source of truth for ConstraintIQ's build context. Update the "Last updated" line and changelog at the end of every work session.
 
-Last updated: **2026-08-25** (elastic capacity model)
+Last updated: **2026-08-25** (surge availability datagen + cost curve)
 Current phase: **Complete prototype — demo-ready**
 
 ---
@@ -27,9 +27,11 @@ Theory of Constraints is inherently **reactive** — it identifies the current b
 |---|---|
 | `config.py` | Loads `config/network.yaml` → `NetworkConfig` dataclass |
 | `datagen/demand.py` | Synthetic demand: trend + weekly seasonality + noise (Holt-Winters-compatible) |
+| `datagen/capacity.py` | Synthetic surge availability: day-of-week effect + partner fatigue decay + gaussian noise |
 | `datagen/network.py` | Builds hub/zone topology dict from config |
 | `forecasting/models.py` | Holt-Winters (`statsmodels`) per-zone 14-day forecast |
-| `toc/constraint.py` | `compute_utilization()`, `identify_binding_constraint()`, `smooth_utilization()` (7-day rolling) |
+| `toc/capacity.py` | `CapacityState` dataclass; `surge_incentive_cost()` and `surge_cost_multiplier` property |
+| `toc/constraint.py` | `compute_utilization()` (accepts surge availability), `identify_binding_constraint()`, `smooth_utilization()` |
 | `toc/migration.py` | `detect_migration()`, `detect_historical_migration()`, `migration_summary()` |
 | `pipeline.py` | Orchestrates everything → returns results dict used by both dashboards |
 
@@ -59,7 +61,7 @@ Run: `cd web && npm run dev` → http://localhost:3000
 
 ## 3. Network Topology (synthetic)
 
-- **2 hubs:** HUB_NORTH (capacity 12,000/day), HUB_SOUTH (capacity 9,000/day)
+- **2 hubs:** HUB_NORTH (base 12,000 + surge 3,000/day), HUB_SOUTH (base 9,000 + surge 2,500/day)
 - **7 zones:** Z1–Z4 → North Hub, Z5–Z7 → South Hub
 - **180 days history + 14-day forecast horizon**
 - Zone 3 (+20/day trend) and Zone 6 (+15/day trend) are the primary constraint drivers
@@ -93,6 +95,8 @@ Run: `cd web && npm run dev` → http://localhost:3000
 - **FastAPI as the API boundary.** Pipeline runs once at startup; JSON responses feed the Next.js frontend. CORS is open to localhost:3000 only.
 - **Dropped Tremor** (React ^18 peer dep conflict with React 19) — built UI directly with Tailwind + recharts. No functional difference.
 - **Elastic capacity model, not a fixed ceiling.** Reflects Shadowfax's actual crowdsourced-fleet structure — capacity is base + bounded surge, gated by lead time, not a hard wall. Constraint classification distinguishes hard (breach even at max surge) from soft (covered by surge) — this priority ordering matters more for decision-making than raw utilization.
+- **Surge availability varies day-to-day.** Gig partners are less available on weekends (day-of-week multiplier), consecutive heavy-surge use reduces next-day supply (fatigue decay), and residual noise (CV = 10%) captures unpredictable drop-outs. Effective capacity is therefore `base + min(surge_needed, surge_available)`, not a fixed ceiling.
+- **Surge cost modelled as a relative index.** `surge_cost_multiplier = (1 + 0.5 × fraction²) × (1 + 0.5 × shortfall_days)` — convex in volume, penalised for short notice. At day 180, HUB_NORTH shows 3.75× worst-case cost index.
 - **Read-only overlay, not a system of record.** ConstraintIQ never writes back to operational systems. Its value is entirely in decision support.
 
 ---
@@ -124,6 +128,7 @@ uv run pytest
 
 ## 8. Changelog
 
+- **2026-08-25** — Surge availability datagen (`datagen/capacity.py`): day-of-week effect, fatigue decay, gaussian noise. Surge cost curve: `surge_incentive_cost()` + `surge_cost_multiplier` property (convex volume premium × short-notice penalty). Wired both into pipeline — effective capacity now uses actual daily availability. API extended with `base_capacity`, `surge_available`, `is_hard`, `is_soft`, `surge_cost_multiplier`, `act_by_date`. Frontend: HARD/SOFT badges, base-vs-surge stacked bar, "Act by" column with escalation row styling. 61/61 tests passing.
 - **2026-08-25** — Extended capacity model from fixed ceiling to elastic surge (base + max_surge, gated by surge_lead_time_days). Added hard/soft constraint classification and act_by_date on migration events. 45/45 tests passing.
 - **2026-08-25** — Full prototype shipped: pipeline, Streamlit dashboard, FastAPI layer, Next.js dashboard. Pushed to GitHub.
 - **2026-08-22** — Python pipeline built from scratch: datagen, Holt-Winters forecasting, ToC constraint + migration detection, Streamlit dashboard.

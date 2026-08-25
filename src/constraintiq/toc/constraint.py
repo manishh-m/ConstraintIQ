@@ -47,9 +47,16 @@ class ResourceUtilization:
 
 
 def _add_elastic_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Vectorised helper: compute effective_capacity, utilization, is_soft, is_hard from load."""
+    """Vectorised helper: compute effective_capacity, utilization, is_soft, is_hard from load.
+
+    Uses `surge_available` column as the surge ceiling when present (actual day-to-day
+    availability from datagen); falls back to `max_surge_capacity` (the configured max)
+    when the column is absent — e.g. for projected utilization where future availability
+    is unknown.
+    """
+    surge_cap = df["surge_available"] if "surge_available" in df.columns else df["max_surge_capacity"]
     surge_needed = (df["load"] - df["base_capacity"]).clip(lower=0)
-    surge_used = surge_needed.clip(upper=df["max_surge_capacity"])
+    surge_used = surge_needed.clip(upper=surge_cap)
     df = df.copy()
     df["effective_capacity"] = df["base_capacity"] + surge_used
     df["utilization"] = df["load"] / df["effective_capacity"]
@@ -58,7 +65,11 @@ def _add_elastic_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def compute_utilization(demand: pd.DataFrame, network: dict) -> pd.DataFrame:
+def compute_utilization(
+    demand: pd.DataFrame,
+    network: dict,
+    surge_availability: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Aggregate zone demand to hub load and return elastic utilization per hub per day.
 
     We model the constraint at hub level: a hub's throughput ceiling is what limits the
@@ -66,14 +77,21 @@ def compute_utilization(demand: pd.DataFrame, network: dict) -> pd.DataFrame:
     capacity in the config) so hubs are the only resource type here.
 
     Args:
-        demand:  Tidy DataFrame [date, zone_id, hub_id, demand].
-        network: Topology dict from build_network() — carries base_capacity_per_day,
-                 max_surge_capacity_per_day, and surge_lead_time_days per hub.
+        demand:             Tidy DataFrame [date, zone_id, hub_id, demand].
+        network:            Topology dict from build_network() — carries base_capacity_per_day,
+                            max_surge_capacity_per_day, and surge_lead_time_days per hub.
+        surge_availability: Optional DataFrame [date, hub_id, surge_available] from
+                            datagen.capacity.  When provided, `surge_available` (capped at
+                            max_surge_capacity) replaces the fixed ceiling in the effective-
+                            capacity formula — making the constraint model respond to
+                            day-to-day gig-partner availability.  When None, falls back to
+                            max_surge_capacity (identical to the original behaviour).
 
     Returns:
         DataFrame [date, resource_id, resource_type, load, base_capacity,
-                   max_surge_capacity, surge_lead_time_days, effective_capacity,
-                   utilization, is_soft, is_hard], sorted by date asc / utilization desc.
+                   max_surge_capacity, surge_lead_time_days, surge_available,
+                   effective_capacity, utilization, is_soft, is_hard],
+                   sorted by date asc / utilization desc.
     """
     hub_load = (
         demand.groupby(["date", "hub_id"])["demand"]
@@ -94,12 +112,27 @@ def compute_utilization(demand: pd.DataFrame, network: dict) -> pd.DataFrame:
         {hid: meta["surge_lead_time_days"] for hid, meta in hubs.items()}
     )
 
+    # Wire in actual day-by-day surge availability, capped at the configured maximum.
+    if surge_availability is not None:
+        avail = (
+            surge_availability
+            .rename(columns={"hub_id": "resource_id"})[["date", "resource_id", "surge_available"]]
+        )
+        hub_load = hub_load.merge(avail, on=["date", "resource_id"], how="left")
+        hub_load["surge_available"] = (
+            hub_load["surge_available"]
+            .fillna(hub_load["max_surge_capacity"])
+            .clip(upper=hub_load["max_surge_capacity"])
+        )
+    else:
+        hub_load["surge_available"] = hub_load["max_surge_capacity"]
+
     hub_load = _add_elastic_columns(hub_load)
 
     cols = [
         "date", "resource_id", "resource_type", "load",
         "base_capacity", "max_surge_capacity", "surge_lead_time_days",
-        "effective_capacity", "utilization", "is_soft", "is_hard",
+        "surge_available", "effective_capacity", "utilization", "is_soft", "is_hard",
     ]
     return hub_load[cols].sort_values(
         ["date", "utilization"], ascending=[True, False]

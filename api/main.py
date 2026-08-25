@@ -71,6 +71,7 @@ def _migration_event_to_dict(e) -> dict[str, Any]:
         "from_resource": e.from_resource,
         "to_resource": e.to_resource,
         "projected_utilization": round(e.projected_utilization, 4),
+        "act_by_date": str(e.act_by_date.date()),
     }
 
 
@@ -90,12 +91,19 @@ def get_summary() -> dict[str, Any]:
     today    = util[util["date"] == last_day]
     last_demand = demand[demand["date"] == last_day]
 
+    cost_mults = r["hub_cost_multipliers"]
+
     hubs = []
     for hub in config.hubs:
-        row  = today[today["resource_id"] == hub.id].iloc[0]
-        u    = float(row["utilization"])
-        load = float(row["load"])
-        cap  = float(row["effective_capacity"])
+        row           = today[today["resource_id"] == hub.id].iloc[0]
+        load          = float(row["load"])
+        base_cap      = float(row["base_capacity"])
+        max_surge_cap = float(row["max_surge_capacity"])
+        surge_avail   = float(row["surge_available"])
+        eff_cap       = float(row["effective_capacity"])
+        u             = float(row["utilization"])
+        surge_used    = min(max(0.0, load - base_cap), surge_avail)
+        surge_util    = round(surge_used / surge_avail, 4) if surge_avail > 0 else 0.0
 
         hub_zones = [z for z in config.zones if z.hub == hub.id]
         zones = []
@@ -112,8 +120,16 @@ def get_summary() -> dict[str, Any]:
             "id": hub.id,
             "name": hub.name,
             "load": round(load, 1),
-            "capacity": cap,
+            "capacity": eff_cap,          # kept for backward compat
+            "base_capacity": base_cap,
+            "max_surge_capacity": max_surge_cap,
+            "surge_available": round(surge_avail, 1),
+            "effective_capacity": eff_cap,
             "utilization": round(u, 4),
+            "surge_utilization": surge_util,
+            "is_hard": bool(row["is_hard"]),
+            "is_soft": bool(row["is_soft"]),
+            "surge_cost_multiplier": cost_mults.get(hub.id, 1.0),
             "zones": zones,
         })
 
@@ -123,6 +139,8 @@ def get_summary() -> dict[str, Any]:
         "binding_constraint": {
             "resource_id": bc.resource_id,
             "utilization": round(bc.utilization, 4),
+            "is_hard": bc.is_hard,
+            "is_soft": bc.is_soft,
         },
         "historical_migration_count": len(r["historical_migrations"]),
         "forecast_horizon_days": config.forecast_horizon,

@@ -9,14 +9,24 @@ export interface Hub {
   id: string
   name: string
   load: number
-  capacity: number
+  capacity: number           // kept for compat — equals effective_capacity
+  base_capacity: number
+  max_surge_capacity: number
+  surge_available: number
+  effective_capacity: number
   utilization: number
+  surge_utilization: number
+  is_hard: boolean
+  is_soft: boolean
+  surge_cost_multiplier: number
   zones: Zone[]
 }
 
 export interface BindingConstraint {
   resource_id: string
   utilization: number
+  is_hard: boolean
+  is_soft: boolean
 }
 
 export interface SummaryData {
@@ -61,6 +71,7 @@ export interface MigrationEvent {
   from_resource: string
   to_resource: string
   projected_utilization: number
+  act_by_date: string
 }
 
 export interface UtilizationRecord {

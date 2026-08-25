@@ -161,21 +161,36 @@ export default function MigrationSection({ data }: { data: MigrationData }) {
                     <th className="text-left py-1 font-medium">From</th>
                     <th className="text-left py-1 font-medium">To</th>
                     <th className="text-right py-1 font-medium">Util.</th>
+                    <th className="text-right py-1 font-medium">Act by</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {historical_events.map((e, i) => (
-                    <tr key={i} className="border-b border-gray-50">
-                      <td className="py-1.5 text-gray-600">{e.day}</td>
-                      <td className="py-1.5 text-gray-600">{e.from_resource.replace('HUB_', '')}</td>
-                      <td className="py-1.5 font-medium text-blue-700">{e.to_resource.replace('HUB_', '')}</td>
-                      <td className="py-1.5 text-right text-gray-600">{(e.projected_utilization * 100).toFixed(1)}%</td>
-                    </tr>
-                  ))}
+                  {historical_events.map((e, i) => {
+                    const isHard = e.projected_utilization > 1.0
+                    return (
+                      <tr
+                        key={i}
+                        className="border-b border-gray-50"
+                        style={isHard ? { background: '#FEF2F2' } : undefined}
+                      >
+                        <td className="py-1.5 text-gray-600">{e.day}</td>
+                        <td className="py-1.5 text-gray-600">{e.from_resource.replace('HUB_', '')}</td>
+                        <td className="py-1.5 font-medium text-blue-700">{e.to_resource.replace('HUB_', '')}</td>
+                        <td
+                          className="py-1.5 text-right font-medium"
+                          style={{ color: isHard ? '#EF4444' : '#F59E0B' }}
+                        >
+                          {(e.projected_utilization * 100).toFixed(1)}%
+                          {isHard && <span className="ml-1 text-xs font-bold text-red-600">HARD</span>}
+                        </td>
+                        <td className="py-1.5 text-right text-gray-500 text-xs">{e.act_by_date}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
               <p className="text-xs text-gray-400 mt-3">
-                📌 Constraint settled at{' '}
+                Constraint settled at{' '}
                 <span className="font-medium text-gray-600">
                   {labelHub(historical_events.at(-1)!.to_resource)}
                 </span>{' '}
@@ -198,17 +213,35 @@ export default function MigrationSection({ data }: { data: MigrationData }) {
                   <th className="text-left py-1 font-medium">From</th>
                   <th className="text-left py-1 font-medium">To</th>
                   <th className="text-right py-1 font-medium">Proj. util.</th>
+                  <th className="text-right py-1 font-medium">Act by</th>
                 </tr>
               </thead>
               <tbody>
-                {forecast_events.map((e, i) => (
-                  <tr key={i} className="border-b border-gray-50">
-                    <td className="py-1.5 text-gray-600">{e.day}</td>
-                    <td className="py-1.5 text-gray-600">{e.from_resource.replace('HUB_', '')}</td>
-                    <td className="py-1.5 font-medium text-orange-600">{e.to_resource.replace('HUB_', '')}</td>
-                    <td className="py-1.5 text-right text-gray-600">{(e.projected_utilization * 100).toFixed(1)}%</td>
-                  </tr>
-                ))}
+                {forecast_events.map((e, i) => {
+                  const isHard = e.projected_utilization > 1.0
+                  return (
+                    <tr
+                      key={i}
+                      className="border-b border-gray-50"
+                      style={isHard ? { background: '#FEF2F2' } : undefined}
+                    >
+                      <td className="py-1.5 text-gray-600">{e.day}</td>
+                      <td className="py-1.5 text-gray-600">{e.from_resource.replace('HUB_', '')}</td>
+                      <td className="py-1.5 font-medium text-orange-600">{e.to_resource.replace('HUB_', '')}</td>
+                      <td
+                        className="py-1.5 text-right font-medium"
+                        style={{ color: isHard ? '#EF4444' : '#F59E0B' }}
+                      >
+                        {(e.projected_utilization * 100).toFixed(1)}%
+                        {isHard && <span className="ml-1 text-xs font-bold text-red-600">HARD</span>}
+                      </td>
+                      <td className="py-1.5 text-right font-medium text-xs"
+                          style={{ color: isHard ? '#EF4444' : '#F59E0B' }}>
+                        {e.act_by_date}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           ) : (

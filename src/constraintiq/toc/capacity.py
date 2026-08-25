@@ -71,6 +71,68 @@ class CapacityState:
         """True when load exceeds even max-surge effective capacity — a genuine breach."""
         return self.load > self.effective_capacity
 
+    @property
+    def surge_cost_multiplier(self) -> float:
+        """Relative cost index for today's surge deployment (1.0 = base cost, higher = pricier).
+
+        Composed of two effects:
+          - Volume premium: convex in surge fraction — doubling surge fraction more than
+            doubles cost (tighter gig-market, higher incentives required).
+          - Short-notice penalty: each day of notice below surge_lead_time_days adds 50%
+            to cost. When called without an explicit lead_time argument, assumes zero notice
+            (worst-case / unknown timing) so the caller is not implicitly understating cost.
+            Use surge_incentive_cost() directly when actual lead time is known.
+
+        Returns 1.0 when no surge is deployed (normal operation).
+        """
+        if self.max_surge_capacity == 0 or self.surge_utilization == 0.0:
+            return 1.0
+        return surge_incentive_cost(
+            surge_units=max(0.0, self.load - self.base_capacity),
+            max_surge_capacity=self.max_surge_capacity,
+            lead_time_days_given=0,
+            lead_time_days_required=self.surge_lead_time_days,
+        )
+
+
+def surge_incentive_cost(
+    surge_units: float,
+    max_surge_capacity: float,
+    lead_time_days_given: int,
+    lead_time_days_required: int,
+) -> float:
+    """Relative cost multiplier for deploying a given surge volume on a given timeline.
+
+    This is a *relative index*, not a rupee figure. It tells you how much more expensive
+    a surge activation is compared to routine base-fleet operations (baseline = 1.0).
+
+    Cost model:
+      volume_premium   = 1 + 0.5 × fraction²    (convex: mobilising 100% of surge is
+                                                  1.5× base, not 1.0×)
+      short_notice_hit = 1 + 0.5 × shortfall_days (each day of missing notice adds 50%;
+                                                    zero when lead time is met or exceeded)
+      multiplier       = volume_premium × short_notice_hit
+
+    Args:
+        surge_units:             Parcels to be handled by surge (≥ 0).
+        max_surge_capacity:      Hub's maximum surge throughput.
+        lead_time_days_given:    How many days of notice are actually available.
+        lead_time_days_required: Hub's required surge lead time (surge_lead_time_days).
+
+    Returns:
+        Float ≥ 1.0. Returns 1.0 when surge_units == 0 or max_surge_capacity == 0.
+    """
+    if max_surge_capacity <= 0 or surge_units <= 0:
+        return 1.0
+
+    fraction = min(surge_units / max_surge_capacity, 1.0)
+    volume_premium = 1.0 + 0.5 * fraction ** 2
+
+    shortfall = max(0, lead_time_days_required - lead_time_days_given)
+    short_notice_hit = 1.0 + 0.5 * shortfall
+
+    return volume_premium * short_notice_hit
+
 
 def compute_capacity_state(
     resource_id: str,

@@ -1,6 +1,6 @@
 'use client'
 
-import type { SummaryData } from '@/lib/types'
+import type { Hub, SummaryData } from '@/lib/types'
 
 const DANGER  = '#EF4444'
 const WARNING = '#F59E0B'
@@ -25,30 +25,76 @@ function KpiCard({ label, value, colour }: { label: string; value: string; colou
   )
 }
 
-function UtilBar({ utilization }: { utilization: number }) {
-  const pct = Math.min(utilization * 100, 160)
-  const colour = utilColour(utilization)
+function ConstraintBadge({ is_hard, is_soft }: { is_hard: boolean; is_soft: boolean }) {
+  if (is_hard) return (
+    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+      HARD
+    </span>
+  )
+  if (is_soft) return (
+    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
+      SOFT
+    </span>
+  )
   return (
-    <div className="mt-2">
-      <div className="flex justify-between text-xs text-gray-500 mb-1">
-        <span>0%</span>
-        <span className="font-semibold" style={{ color: colour }}>{(utilization * 100).toFixed(1)}%</span>
-        <span>160%</span>
+    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200">
+      OK
+    </span>
+  )
+}
+
+function CapacityBar({ hub }: { hub: Hub }) {
+  const { load, base_capacity, surge_available, max_surge_capacity, is_hard, is_soft } = hub
+  const scale = base_capacity + max_surge_capacity
+
+  const pct = (v: number) => `${Math.min((v / scale) * 100, 100).toFixed(2)}%`
+
+  const loadColour = is_hard ? DANGER : is_soft ? WARNING : OK
+
+  return (
+    <div className="mt-3">
+      {/* Legend */}
+      <div className="flex gap-4 text-xs text-gray-400 mb-1.5">
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-200 border border-blue-300" />
+          Base ({(base_capacity / 1000).toFixed(0)}k)
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-200 border border-amber-300" />
+          Surge ({(max_surge_capacity / 1000).toFixed(0)}k max)
+        </span>
       </div>
-      <div className="relative h-3 bg-gray-100 rounded-full overflow-hidden">
-        {/* Colour zones */}
-        <div className="absolute inset-y-0 left-0 w-[50%] bg-emerald-100" />
-        <div className="absolute inset-y-0 left-[50%] w-[12.5%] bg-amber-100" />
-        <div className="absolute inset-y-0 left-[62.5%] right-0 bg-red-100" />
-        {/* Capacity marker at 100% */}
-        <div className="absolute inset-y-0 left-[62.5%] w-px bg-red-500" />
-        {/* Utilisation fill */}
+
+      {/* Stacked track */}
+      <div className="relative h-4 rounded-full overflow-hidden bg-gray-100">
+        {/* Base zone */}
+        <div className="absolute inset-y-0 left-0 bg-blue-100" style={{ width: pct(base_capacity) }} />
+        {/* Surge available zone */}
         <div
-          className="absolute inset-y-0 left-0 rounded-full transition-all"
-          style={{ width: `${(pct / 160) * 100}%`, background: colour }}
+          className="absolute inset-y-0 bg-amber-100"
+          style={{ left: pct(base_capacity), width: pct(surge_available) }}
+        />
+        {/* Load fill */}
+        <div
+          className="absolute inset-y-0 left-0 opacity-80 transition-all duration-300"
+          style={{ width: pct(load), background: loadColour }}
+        />
+        {/* Base / surge divider */}
+        <div
+          className="absolute inset-y-0 w-px bg-blue-400 z-10"
+          style={{ left: pct(base_capacity) }}
         />
       </div>
-      <p className="text-xs text-gray-400 mt-0.5">Red line = 100% capacity</p>
+
+      {/* Foot labels */}
+      <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+        <span style={{ color: loadColour }} className="font-medium">
+          {load.toLocaleString()} load
+        </span>
+        <span className="text-gray-400">
+          {base_capacity.toLocaleString()} base · {(base_capacity + max_surge_capacity).toLocaleString()} max
+        </span>
+      </div>
     </div>
   )
 }
@@ -74,7 +120,7 @@ export default function NetworkSnapshot({ data }: { data: SummaryData }) {
         <KpiCard
           label="Binding Constraint"
           value={binding_constraint.resource_id.replace('HUB_', '').replace('_', ' ') + ' Hub'}
-          colour={binding_constraint.utilization >= 1 ? DANGER : WARNING}
+          colour={binding_constraint.is_hard ? DANGER : binding_constraint.is_soft ? WARNING : OK}
         />
         <KpiCard
           label="Historical Migrations"
@@ -87,8 +133,12 @@ export default function NetworkSnapshot({ data }: { data: SummaryData }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {hubs.map(hub => (
           <div key={hub.id} className="bg-white border border-gray-100 rounded-xl p-5 shadow-sm">
+            {/* Card header */}
             <div className="flex items-center justify-between mb-1">
-              <h3 className="font-semibold text-gray-800">{hub.name}</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-gray-800">{hub.name}</h3>
+                <ConstraintBadge is_hard={hub.is_hard} is_soft={hub.is_soft} />
+              </div>
               <span
                 className="text-sm font-bold px-2 py-0.5 rounded-full"
                 style={{ background: `${utilColour(hub.utilization)}20`, color: utilColour(hub.utilization) }}
@@ -96,10 +146,21 @@ export default function NetworkSnapshot({ data }: { data: SummaryData }) {
                 {(hub.utilization * 100).toFixed(1)}%
               </span>
             </div>
-            <p className="text-xs text-gray-400 mb-3">
-              {hub.load.toLocaleString()} / {hub.capacity.toLocaleString()} parcels/day
+
+            {/* Surge cost index */}
+            <p className="text-xs text-gray-400 mb-0.5">
+              Surge cost index:{' '}
+              <span
+                className="font-semibold"
+                style={{ color: hub.surge_cost_multiplier >= 2.5 ? DANGER : hub.surge_cost_multiplier >= 1.5 ? WARNING : OK }}
+              >
+                {hub.surge_cost_multiplier.toFixed(2)}×
+              </span>
+              {' '}(worst-case notice)
             </p>
-            <UtilBar utilization={hub.utilization} />
+
+            {/* Stacked capacity bar */}
+            <CapacityBar hub={hub} />
 
             {/* Zone table */}
             <table className="w-full mt-4 text-sm">
