@@ -11,14 +11,21 @@ simulation:
   random_seed: 42      # reproducible synthetic data
 
 # --- Hubs (2) ---
-# capacity_per_day = max parcels the hub can process/dispatch per day (throughput ceiling)
+# Elastic capacity model: hubs carry a fixed captive fleet (base_capacity_per_day) plus a
+# mobilisable surge pool (max_surge_capacity_per_day) that requires advance notice
+# (surge_lead_time_days) to activate. This reflects the gig/crowdsourced fleet reality:
+# capacity is not a hard wall — it is elastic but not instant and not infinite.
 hubs:
   - id: HUB_NORTH
     name: "North Hub"
-    capacity_per_day: 12000
+    base_capacity_per_day: 12000
+    max_surge_capacity_per_day: 3000
+    surge_lead_time_days: 3
   - id: HUB_SOUTH
     name: "South Hub"
-    capacity_per_day: 9000
+    base_capacity_per_day: 9000
+    max_surge_capacity_per_day: 2500
+    surge_lead_time_days: 3
 
 # --- Zones (6-8) ---
 # Each zone is served by a hub. base_demand is mean parcels/day before

@@ -19,7 +19,9 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "network.
 class Hub:
     id: str
     name: str
-    capacity_per_day: float
+    base_capacity_per_day: float
+    max_surge_capacity_per_day: float
+    surge_lead_time_days: int
 
 
 @dataclass(frozen=True)

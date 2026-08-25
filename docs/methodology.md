@@ -36,7 +36,7 @@ to it → elevate it → repeat. ConstraintIQ adds a predictive front-end: *anti
   reality. Results demonstrate the *method*, not a validated forecast of any real network.
 - **Additive demand → hub load** — assumes hub load is the simple sum of served-zone demand;
   ignores routing, shift scheduling, and inter-hub transfers.
-- **Capacity as a fixed daily ceiling** — real capacity flexes (overtime, temp staff).
+- **Capacity now models elastic (crowdsourced) surge** — base capacity plus a bounded, lead-time-gated surge pool, not a fixed ceiling. Still assumes surge is available at zero marginal cost up to max_surge_capacity_per_day and instantly effective once lead time has passed — no incentive/cost curve, no partial-surge availability modeling yet.
 - **Independent zone forecasts** — no cross-zone demand correlation modelled yet.
 
 ## Open questions / next steps

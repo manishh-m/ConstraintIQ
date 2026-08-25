@@ -88,8 +88,14 @@ if __name__ == "__main__":
 
     print(f"\n--- Current binding constraint (day {config.days}) ---")
     cc = results["current_constraint"]
-    print(f"  {cc.resource_id}  load={cc.load:,.0f}  capacity={cc.capacity:,.0f}  "
-          f"utilisation={cc.utilization:.1%}")
+    if cc.is_hard:
+        status = "HARD — surge exhausted, genuine throughput breach"
+    elif cc.is_soft:
+        status = "SOFT — surge deployed, buffer shrinking"
+    else:
+        status = "normal — within base capacity"
+    print(f"  {cc.resource_id}  load={cc.load:,.0f}  base={cc.base_capacity:,.0f}  "
+          f"effective={cc.effective_capacity:,.0f}  utilisation={cc.utilization:.1%}  [{status}]")
 
     print(f"\n--- {results['summary']} ---")
 

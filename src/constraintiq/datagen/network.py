@@ -14,11 +14,26 @@ def build_network(config: NetworkConfig) -> dict:
 
     Shape:
         {
-            "hubs": {hub_id: {"name": ..., "capacity_per_day": ..., "zones": [zone_id, ...]}},
+            "hubs": {hub_id: {
+                "name": ...,
+                "base_capacity_per_day": ...,
+                "max_surge_capacity_per_day": ...,
+                "surge_lead_time_days": ...,
+                "zones": [zone_id, ...],
+            }},
             "zones": {zone_id: {"name": ..., "hub": hub_id, "base_demand": ..., ...}},
         }
     """
-    hubs: dict = {h.id: {"name": h.name, "capacity_per_day": h.capacity_per_day, "zones": []} for h in config.hubs}
+    hubs: dict = {
+        h.id: {
+            "name": h.name,
+            "base_capacity_per_day": h.base_capacity_per_day,
+            "max_surge_capacity_per_day": h.max_surge_capacity_per_day,
+            "surge_lead_time_days": h.surge_lead_time_days,
+            "zones": [],
+        }
+        for h in config.hubs
+    }
     zones: dict = {}
     for z in config.zones:
         hubs[z.hub]["zones"].append(z.id)

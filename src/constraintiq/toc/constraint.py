@@ -1,8 +1,11 @@
 """Identify the current binding constraint in the network.
 
-ToC framing: utilization = load / capacity. The binding constraint is the resource with the
-highest utilization — the one governing network throughput right now. This module answers
-"where is the constraint today"; migration.py answers "where does it go next".
+ToC framing: the binding constraint is the resource whose utilization is highest — the one
+governing network throughput right now. With an elastic crowdsourced capacity model,
+"utilization" is load / effective_capacity (not load / a fixed ceiling), and the binding
+constraint is classified as hard (surge exhausted, genuine breach) or soft (surge deployed
+but buffer remaining). This module answers "where is the constraint today and how severe is
+it"; migration.py answers "where does it go next and when must we act".
 """
 
 from __future__ import annotations
@@ -15,29 +18,62 @@ import pandas as pd
 @dataclass(frozen=True)
 class ResourceUtilization:
     resource_id: str
-    resource_type: str  # "hub" | "zone"
+    resource_type: str      # "hub" | "zone"
     load: float
-    capacity: float
+    base_capacity: float
+    max_surge_capacity: float
+    surge_lead_time_days: int
+
+    @property
+    def effective_capacity(self) -> float:
+        """Base capacity plus surge actually needed (capped at max surge)."""
+        surge_needed = max(0.0, self.load - self.base_capacity)
+        surge_used = min(surge_needed, self.max_surge_capacity)
+        return self.base_capacity + surge_used
 
     @property
     def utilization(self) -> float:
-        return self.load / self.capacity if self.capacity else float("inf")
+        """load / effective_capacity. >1.0 means a hard breach; =1.0 means soft; <1.0 normal."""
+        ec = self.effective_capacity
+        return self.load / ec if ec else float("inf")
+
+    @property
+    def is_soft(self) -> bool:
+        return self.base_capacity < self.load <= self.effective_capacity
+
+    @property
+    def is_hard(self) -> bool:
+        return self.load > self.effective_capacity
+
+
+def _add_elastic_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Vectorised helper: compute effective_capacity, utilization, is_soft, is_hard from load."""
+    surge_needed = (df["load"] - df["base_capacity"]).clip(lower=0)
+    surge_used = surge_needed.clip(upper=df["max_surge_capacity"])
+    df = df.copy()
+    df["effective_capacity"] = df["base_capacity"] + surge_used
+    df["utilization"] = df["load"] / df["effective_capacity"]
+    df["is_soft"] = (df["load"] > df["base_capacity"]) & (df["load"] <= df["effective_capacity"])
+    df["is_hard"] = df["load"] > df["effective_capacity"]
+    return df
 
 
 def compute_utilization(demand: pd.DataFrame, network: dict) -> pd.DataFrame:
-    """Aggregate zone demand to hub load and return utilization per hub per day.
+    """Aggregate zone demand to hub load and return elastic utilization per hub per day.
 
     We model the constraint at hub level: a hub's throughput ceiling is what limits the
-    whole sub-network it serves. Zone-level capacity limits aren't modelled (no per-zone
+    whole sub-network it serves. Zone-level capacity limits are not modelled (no per-zone
     capacity in the config) so hubs are the only resource type here.
 
     Args:
         demand:  Tidy DataFrame [date, zone_id, hub_id, demand].
-        network: Topology dict from build_network() — carries capacity_per_day per hub.
+        network: Topology dict from build_network() — carries base_capacity_per_day,
+                 max_surge_capacity_per_day, and surge_lead_time_days per hub.
 
     Returns:
-        DataFrame [date, resource_id, resource_type, load, capacity, utilization], sorted
-        by date ascending then utilization descending.
+        DataFrame [date, resource_id, resource_type, load, base_capacity,
+                   max_surge_capacity, surge_lead_time_days, effective_capacity,
+                   utilization, is_soft, is_hard], sorted by date asc / utilization desc.
     """
     hub_load = (
         demand.groupby(["date", "hub_id"])["demand"]
@@ -46,12 +82,26 @@ def compute_utilization(demand: pd.DataFrame, network: dict) -> pd.DataFrame:
         .rename(columns={"hub_id": "resource_id", "demand": "load"})
     )
     hub_load["resource_type"] = "hub"
-    hub_load["capacity"] = hub_load["resource_id"].map(
-        {hid: meta["capacity_per_day"] for hid, meta in network["hubs"].items()}
-    )
-    hub_load["utilization"] = hub_load["load"] / hub_load["capacity"]
 
-    return hub_load[["date", "resource_id", "resource_type", "load", "capacity", "utilization"]].sort_values(
+    hubs = network["hubs"]
+    hub_load["base_capacity"] = hub_load["resource_id"].map(
+        {hid: meta["base_capacity_per_day"] for hid, meta in hubs.items()}
+    )
+    hub_load["max_surge_capacity"] = hub_load["resource_id"].map(
+        {hid: meta["max_surge_capacity_per_day"] for hid, meta in hubs.items()}
+    )
+    hub_load["surge_lead_time_days"] = hub_load["resource_id"].map(
+        {hid: meta["surge_lead_time_days"] for hid, meta in hubs.items()}
+    )
+
+    hub_load = _add_elastic_columns(hub_load)
+
+    cols = [
+        "date", "resource_id", "resource_type", "load",
+        "base_capacity", "max_surge_capacity", "surge_lead_time_days",
+        "effective_capacity", "utilization", "is_soft", "is_hard",
+    ]
+    return hub_load[cols].sort_values(
         ["date", "utilization"], ascending=[True, False]
     ).reset_index(drop=True)
 
@@ -59,39 +109,75 @@ def compute_utilization(demand: pd.DataFrame, network: dict) -> pd.DataFrame:
 def identify_binding_constraint(utilization_day: pd.DataFrame) -> ResourceUtilization:
     """Return the binding constraint for a single day's utilization slice.
 
+    Priority order — a deliberate design choice reflecting the gig-fleet operating model:
+
+      1. Hard-constrained resources (load > effective_capacity, utilization > 1.0):
+         ranked by utilization descending. These are active breaches — demand exceeds even
+         maximum mobilised capacity and throughput is genuinely capped.
+
+      2. Soft-constrained resources (base_capacity < load ≤ effective_capacity, util = 1.0):
+         highest utilization. Surge is deployed but not yet exhausted — the buffer is
+         shrinking and mobilisation must begin before lead time expires.
+
+      3. All other resources (load ≤ base_capacity, utilization < 1.0):
+         highest utilization — normal operation, no constraint pressure.
+
+    Note: with the elastic-capacity formula, hard resources always have utilization > 1.0,
+    soft resources have utilization = 1.0 exactly, and normal resources have utilization < 1.0.
+    The priority ordering therefore maps to descending utilization, but the explicit priority
+    logic is preserved here to document intent and to remain correct if the capacity formula
+    ever changes.
+
     Args:
         utilization_day: Rows from compute_utilization() for one specific date.
     """
     if utilization_day.empty:
         raise ValueError("utilization_day DataFrame is empty.")
-    top = utilization_day.loc[utilization_day["utilization"].idxmax()]
+
+    hard = utilization_day[utilization_day["is_hard"]]
+    if not hard.empty:
+        top = hard.loc[hard["utilization"].idxmax()]
+    else:
+        soft = utilization_day[utilization_day["is_soft"]]
+        if not soft.empty:
+            top = soft.loc[soft["utilization"].idxmax()]
+        else:
+            top = utilization_day.loc[utilization_day["utilization"].idxmax()]
+
     return ResourceUtilization(
         resource_id=top["resource_id"],
         resource_type=top["resource_type"],
         load=float(top["load"]),
-        capacity=float(top["capacity"]),
+        base_capacity=float(top["base_capacity"]),
+        max_surge_capacity=float(top["max_surge_capacity"]),
+        surge_lead_time_days=int(top["surge_lead_time_days"]),
     )
 
 
 def smooth_utilization(utilization: pd.DataFrame, window: int = 7) -> pd.DataFrame:
-    """Apply a rolling mean to each resource's utilization to remove day-of-week noise.
+    """Apply a rolling mean to each resource's load to remove day-of-week noise.
 
-    A constraint that flips every other day due to seasonality isn't an operationally
-    meaningful migration. Smoothing over one weekly period (7 days) isolates trend-driven
-    shifts from day-of-week effects.
+    A constraint that flips every other day due to weekly seasonality is not an
+    operationally meaningful migration. Smoothing over one weekly period (7 days)
+    isolates trend-driven shifts from day-of-week effects.
+
+    We smooth raw load (not utilization) to avoid circular dependency with the elastic
+    effective_capacity formula, then recompute effective_capacity, utilization, is_soft,
+    and is_hard from the smoothed load.
     """
     util = utilization.sort_values(["resource_id", "date"]).copy()
-    util["utilization"] = (
-        util.groupby("resource_id")["utilization"]
+    util["load"] = (
+        util.groupby("resource_id")["load"]
         .transform(lambda s: s.rolling(window, min_periods=1).mean())
     )
-    # Recompute load consistently with smoothed utilization
-    util["load"] = util["utilization"] * util["capacity"]
-    return util.sort_values(["date", "utilization"], ascending=[True, False]).reset_index(drop=True)
+    util = _add_elastic_columns(util)
+    return util.sort_values(
+        ["date", "utilization"], ascending=[True, False]
+    ).reset_index(drop=True)
 
 
 def binding_constraint_history(utilization: pd.DataFrame, smooth: bool = True) -> pd.DataFrame:
-    """Return the binding constraint (highest-utilization resource) for every date.
+    """Return the binding constraint (highest-priority resource) for every date.
 
     Args:
         utilization: Output of compute_utilization().
@@ -99,9 +185,9 @@ def binding_constraint_history(utilization: pd.DataFrame, smooth: bool = True) -
                      to suppress day-of-week noise. Pass False for raw daily granularity.
 
     Returns:
-        DataFrame [date, resource_id, utilization] — one row per date.
+        DataFrame [date, resource_id, utilization, is_soft, is_hard] — one row per date.
     """
     u = smooth_utilization(utilization) if smooth else utilization
     idx = u.groupby("date")["utilization"].idxmax()
-    result = u.loc[idx, ["date", "resource_id", "utilization"]].copy()
+    result = u.loc[idx, ["date", "resource_id", "utilization", "is_soft", "is_hard"]].copy()
     return result.sort_values("date").reset_index(drop=True)

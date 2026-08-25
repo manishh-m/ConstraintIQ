@@ -95,7 +95,7 @@ def get_summary() -> dict[str, Any]:
         row  = today[today["resource_id"] == hub.id].iloc[0]
         u    = float(row["utilization"])
         load = float(row["load"])
-        cap  = float(row["capacity"])
+        cap  = float(row["effective_capacity"])
 
         hub_zones = [z for z in config.zones if z.hub == hub.id]
         zones = []
@@ -176,9 +176,16 @@ def get_migration() -> dict[str, Any]:
     proj        = r["projected_utilization"]
 
     # Keep only hub-level rows with the columns the dashboard needs
-    cols = ["date", "resource_id", "load", "capacity", "utilization"]
-    util_records = _df_to_records(util_smooth[cols].round({"load": 1, "utilization": 4}))
-    proj_records = _df_to_records(proj[cols].round({"load": 1, "utilization": 4}))
+    cols = ["date", "resource_id", "load", "effective_capacity", "utilization"]
+    # Rename effective_capacity → capacity to keep the wire format stable for the frontend.
+    util_records = _df_to_records(
+        util_smooth[cols].rename(columns={"effective_capacity": "capacity"})
+        .round({"load": 1, "utilization": 4})
+    )
+    proj_records = _df_to_records(
+        proj[cols].rename(columns={"effective_capacity": "capacity"})
+        .round({"load": 1, "utilization": 4})
+    )
 
     return {
         "historical_events": [_migration_event_to_dict(e) for e in r["historical_migrations"]],

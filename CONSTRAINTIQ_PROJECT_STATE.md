@@ -2,7 +2,7 @@
 
 > **Purpose:** Single source of truth for ConstraintIQ's build context. Update the "Last updated" line and changelog at the end of every work session.
 
-Last updated: **2026-08-25**
+Last updated: **2026-08-25** (elastic capacity model)
 Current phase: **Complete prototype — demo-ready**
 
 ---
@@ -92,6 +92,7 @@ Run: `cd web && npm run dev` → http://localhost:3000
 - **Holt-Winters for forecasting, not a heavy ML model.** Deliberate — keeps the prototype explainable. The forecasting layer is swappable; the ToC logic and migration detection are the differentiating piece.
 - **FastAPI as the API boundary.** Pipeline runs once at startup; JSON responses feed the Next.js frontend. CORS is open to localhost:3000 only.
 - **Dropped Tremor** (React ^18 peer dep conflict with React 19) — built UI directly with Tailwind + recharts. No functional difference.
+- **Elastic capacity model, not a fixed ceiling.** Reflects Shadowfax's actual crowdsourced-fleet structure — capacity is base + bounded surge, gated by lead time, not a hard wall. Constraint classification distinguishes hard (breach even at max surge) from soft (covered by surge) — this priority ordering matters more for decision-making than raw utilization.
 - **Read-only overlay, not a system of record.** ConstraintIQ never writes back to operational systems. Its value is entirely in decision support.
 
 ---
@@ -123,5 +124,6 @@ uv run pytest
 
 ## 8. Changelog
 
+- **2026-08-25** — Extended capacity model from fixed ceiling to elastic surge (base + max_surge, gated by surge_lead_time_days). Added hard/soft constraint classification and act_by_date on migration events. 45/45 tests passing.
 - **2026-08-25** — Full prototype shipped: pipeline, Streamlit dashboard, FastAPI layer, Next.js dashboard. Pushed to GitHub.
 - **2026-08-22** — Python pipeline built from scratch: datagen, Holt-Winters forecasting, ToC constraint + migration detection, Streamlit dashboard.

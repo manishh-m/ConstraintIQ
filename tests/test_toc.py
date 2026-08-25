@@ -6,6 +6,7 @@ import pytest
 from constraintiq.config import load_config
 from constraintiq.datagen.demand import generate_demand
 from constraintiq.datagen.network import build_network
+from constraintiq.toc.capacity import CapacityState, compute_capacity_state
 from constraintiq.toc.constraint import (
     ResourceUtilization,
     binding_constraint_history,
@@ -50,10 +51,14 @@ def projected(forecasts, network):
     return project_future_utilization(forecasts, network)
 
 
-# --- compute_utilization ---
+# ── compute_utilization ────────────────────────────────────────────────────────
 
 def test_utilization_has_expected_columns(utilization):
-    assert set(utilization.columns) >= {"date", "resource_id", "resource_type", "load", "capacity", "utilization"}
+    assert set(utilization.columns) >= {
+        "date", "resource_id", "resource_type", "load",
+        "base_capacity", "max_surge_capacity", "surge_lead_time_days",
+        "effective_capacity", "utilization", "is_soft", "is_hard",
+    }
 
 
 def test_utilization_covers_all_hubs(config, utilization):
@@ -75,10 +80,31 @@ def test_utilization_load_matches_zone_sum(config, demand, utilization):
         pd.testing.assert_series_equal(zone_total.sort_index(), hub_load.sort_index(), check_names=False, rtol=1e-3)
 
 
-# --- identify_binding_constraint ---
+def test_effective_capacity_never_below_base(utilization):
+    assert (utilization["effective_capacity"] >= utilization["base_capacity"]).all()
+
+
+def test_hard_and_soft_are_mutually_exclusive(utilization):
+    assert not (utilization["is_hard"] & utilization["is_soft"]).any()
+
+
+def test_hard_implies_utilization_above_one(utilization):
+    hard = utilization[utilization["is_hard"]]
+    assert (hard["utilization"] > 1.0).all()
+
+
+def test_soft_implies_utilization_at_one(utilization):
+    soft = utilization[utilization["is_soft"]]
+    # Soft: load == effective_capacity, so utilization == 1.0 exactly
+    assert (soft["utilization"].round(10) == 1.0).all()
+
+
+# ── identify_binding_constraint ───────────────────────────────────────────────
 
 def test_binding_constraint_is_highest_utilization(utilization):
-    """The binding constraint must always be the resource with maximum utilization."""
+    """Binding constraint must always have the highest utilization in the slice.
+    With elastic capacity, hard > 1.0 > soft == 1.0 > normal < 1.0, so the
+    priority rule and argmax(utilization) are equivalent."""
     for date, group in utilization.groupby("date"):
         bc = identify_binding_constraint(group)
         assert bc.utilization == pytest.approx(group["utilization"].max(), rel=1e-4)
@@ -90,7 +116,52 @@ def test_binding_constraint_history_one_row_per_day(config, utilization):
     assert history["date"].nunique() == config.days
 
 
-# --- projection ---
+def test_identify_binding_constraint_prefers_hard_over_soft():
+    """A hard-constrained hub must win over a soft-constrained hub with higher raw load."""
+    # HUB_A: soft  — load=10500, base=10000, max_surge=1000 → effective=10500, util=1.0
+    # HUB_B: hard  — load=5500,  base=5000,  max_surge=400  → effective=5400,  util≈1.019
+    # Despite HUB_A carrying more load, HUB_B is a hard breach and must be flagged first.
+    data = pd.DataFrame({
+        "date":               [pd.Timestamp("2026-01-01")] * 2,
+        "resource_id":        ["HUB_A", "HUB_B"],
+        "resource_type":      ["hub", "hub"],
+        "load":               [10500.0, 5500.0],
+        "base_capacity":      [10000.0, 5000.0],
+        "max_surge_capacity": [1000.0,  400.0],
+        "surge_lead_time_days": [3, 3],
+        "effective_capacity": [10500.0, 5400.0],
+        "utilization":        [10500.0 / 10500.0, 5500.0 / 5400.0],
+        "is_soft":            [True,  False],
+        "is_hard":            [False, True],
+    })
+    bc = identify_binding_constraint(data)
+    assert bc.resource_id == "HUB_B"
+    assert bc.is_hard
+
+
+def test_identify_binding_constraint_prefers_soft_over_normal():
+    """A soft-constrained hub must win over a normal hub even with lower raw utilization."""
+    # HUB_A: normal — load=8000, base=10000 → util=0.80
+    # HUB_B: soft   — load=5500, base=5000, max_surge=1000 → effective=5500, util=1.0
+    data = pd.DataFrame({
+        "date":               [pd.Timestamp("2026-01-01")] * 2,
+        "resource_id":        ["HUB_A", "HUB_B"],
+        "resource_type":      ["hub", "hub"],
+        "load":               [8000.0, 5500.0],
+        "base_capacity":      [10000.0, 5000.0],
+        "max_surge_capacity": [2000.0, 1000.0],
+        "surge_lead_time_days": [3, 3],
+        "effective_capacity": [10000.0, 5500.0],
+        "utilization":        [8000.0 / 10000.0, 5500.0 / 5500.0],
+        "is_soft":            [False, True],
+        "is_hard":            [False, False],
+    })
+    bc = identify_binding_constraint(data)
+    assert bc.resource_id == "HUB_B"
+    assert bc.is_soft
+
+
+# ── projection ────────────────────────────────────────────────────────────────
 
 def test_projected_utilization_covers_forecast_horizon(config, projected):
     assert projected["date"].nunique() == config.forecast_horizon
@@ -101,7 +172,7 @@ def test_projected_utilization_dates_are_after_history(demand, projected):
     assert (projected["date"] > last_history).all()
 
 
-# --- detect_migration ---
+# ── detect_migration ──────────────────────────────────────────────────────────
 
 def test_detect_migration_returns_list(projected):
     events = detect_migration(projected)
@@ -120,19 +191,28 @@ def test_migration_event_fields(projected):
         assert isinstance(e, MigrationEvent)
         assert e.from_resource != e.to_resource
         assert e.projected_utilization > 0
+        assert isinstance(e.act_by_date, pd.Timestamp)
+
+
+def test_act_by_date_equals_day_minus_lead_time(config, projected):
+    """act_by_date must equal the migration day minus the incoming hub's surge_lead_time_days."""
+    events = detect_migration(projected)
+    for e in events:
+        lead = next(h.surge_lead_time_days for h in config.hubs if h.id == e.to_resource)
+        expected = e.day - pd.Timedelta(days=lead)
+        assert e.act_by_date == expected
 
 
 def test_known_migration_occurs(config, demand, network):
     """The synthetic data is designed so that HUB_NORTH becomes constrained as Z3
-    (trend +20/day) and Z1 (trend +12/day) push its total load past 12 000 parcels/day.
-    Over a long enough horizon the constraint must shift to or stay at HUB_NORTH.
+    (trend +20/day) and Z1 (trend +12/day) push its total load well past its base
+    capacity. Over a long enough horizon the constraint must settle at HUB_NORTH.
 
     This test uses a 60-day horizon so the known constraint-breach is visible.
     """
     forecasts_long = forecast_all_zones(demand, horizon=60)
     projected_long = project_future_utilization(forecasts_long, network)
 
-    # By the end of the 60-day horizon HUB_NORTH should be the binding constraint
     last_date = projected_long["date"].max()
     last_day = projected_long[projected_long["date"] == last_date]
     bc = identify_binding_constraint(last_day)
@@ -140,3 +220,69 @@ def test_known_migration_occurs(config, demand, network):
         f"Expected HUB_NORTH to be constrained by end of 60-day horizon, got {bc.resource_id} "
         f"({bc.utilization:.1%} utilisation)"
     )
+
+
+# ── compute_capacity_state ────────────────────────────────────────────────────
+
+def _hub_cfg(base, max_surge, lead):
+    return {
+        "base_capacity_per_day": base,
+        "max_surge_capacity_per_day": max_surge,
+        "surge_lead_time_days": lead,
+    }
+
+
+def test_capacity_state_normal():
+    """Load within base capacity — no surge, normal operation."""
+    state = compute_capacity_state("HUB_X", 8000.0, _hub_cfg(10000, 2000, 3))
+    assert state.effective_capacity == pytest.approx(10000.0)
+    assert state.surge_utilization == pytest.approx(0.0)
+    assert not state.is_soft_constraint
+    assert not state.is_hard_constraint
+
+
+def test_capacity_state_soft():
+    """Load above base but within base+surge — soft constraint, surge partially deployed."""
+    state = compute_capacity_state("HUB_X", 11000.0, _hub_cfg(10000, 2000, 3))
+    assert state.effective_capacity == pytest.approx(11000.0)   # base + 1000 surge
+    assert state.surge_utilization == pytest.approx(0.5)        # 1000 of 2000 used
+    assert state.is_soft_constraint
+    assert not state.is_hard_constraint
+
+
+def test_capacity_state_hard():
+    """Load exceeds base+max_surge — hard constraint, genuine throughput breach."""
+    state = compute_capacity_state("HUB_X", 12500.0, _hub_cfg(10000, 2000, 3))
+    assert state.effective_capacity == pytest.approx(12000.0)   # base + max_surge (capped)
+    assert state.surge_utilization == pytest.approx(1.0)
+    assert not state.is_soft_constraint
+    assert state.is_hard_constraint
+
+
+def test_capacity_state_boundary_base():
+    """Load exactly at base capacity — still normal, no surge needed."""
+    state = compute_capacity_state("HUB_X", 10000.0, _hub_cfg(10000, 2000, 3))
+    assert state.effective_capacity == pytest.approx(10000.0)
+    assert state.surge_utilization == pytest.approx(0.0)
+    assert not state.is_soft_constraint
+    assert not state.is_hard_constraint
+
+
+def test_capacity_state_boundary_max_surge():
+    """Load exactly at base+max_surge — still soft (not hard), surge fully deployed."""
+    state = compute_capacity_state("HUB_X", 12000.0, _hub_cfg(10000, 2000, 3))
+    assert state.effective_capacity == pytest.approx(12000.0)
+    assert state.surge_utilization == pytest.approx(1.0)
+    assert state.is_soft_constraint
+    assert not state.is_hard_constraint
+
+
+def test_capacity_state_zero_surge_pool():
+    """Hub with no surge pool at all — any overload is immediately hard."""
+    state_over = compute_capacity_state("HUB_X", 10001.0, _hub_cfg(10000, 0, 0))
+    assert state_over.is_hard_constraint
+    assert state_over.surge_utilization == pytest.approx(0.0)
+
+    state_ok = compute_capacity_state("HUB_X", 9999.0, _hub_cfg(10000, 0, 0))
+    assert not state_ok.is_hard_constraint
+    assert not state_ok.is_soft_constraint
